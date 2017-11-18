@@ -1,0 +1,212 @@
+\documentclass{article}
+  
+\usepackage{common/uruwi}
+
+\title{x801tr01 Combat}
+\author{uruwi}
+
+\begin{document}
+
+\pagecolor{Rhodamine!15}
+
+\maketitle
+
+\trsummary
+
+\section{Introduction}
+
+The first idea for how spells would work was to have a function written in a scripting language as such:
+
+\begin{alltt}
+spell Hydra \{
+  name = "spell.hydra";
+  cardSchool = OFFSET_BALANCE;
+  cardRank = 6;
+  successChance = 0.85;
+  speedBonus = 0;
+  target = TARGET_ONE_ENEMY;
+  class = CLASS_DAMAGE;
+  \textbf{perform = (environment, caster, target) => \{
+    target.registerHit(caster, 190, OFFSET_FIRE);
+    target.registerHit(caster, 190, OFFSET_ICE);
+    target.registerHit(caster, 190, OFFSET_STORM);
+  \}}
+\}
+\end{alltt}
+
+(NB: this is a Wizard101 spell, but the concept applies to Experiment801.)
+
+This has some disadvantages:
+
+\begin{itemize}
+  \item It is somewhat difficult to determine (e.~g.) how much damage to be added to each hit from an enchantment.
+  \item It requires the use of a scripting language.
+  \item It is impossible to automatically construct a textual description of the card.
+\end{itemize}
+
+Later, \emph{actions} were conceived, so the same card would have the following:
+
+\begin{alltt}
+(damage, fire, 190, oneEnemy)
+(damage, ice, 190, oneEnemy)
+(damage, storm, 190, oneEnemy)
+\end{alltt}
+
+In Wizard101, most damage spells deal one of the following:
+
+\begin{itemize}
+  \item a fixed quantity
+  \item a range of damage
+  \item an amount depending on the number of pips spent
+\end{itemize}
+
+As a result, we could express all of these possibilities with three numbers: \texttt{baseMin}, \texttt{baseMax} and \texttt{perPip}.
+
+But some spells, such as Wild Bolt, don't fit into that category. And in x801 we might want to create, say, a spell whose damage is affected by the percentage of health remaining. We could create new actions for these types of spells, but what if we want this for healing spells (w101: Healing Current), or for buffs?
+
+\section{Terminology}
+
+There are two kinds of actions:
+
+\begin{itemize}
+  \item Those listed on the card, as detailed in the introduction. To reduce confusion, we call these steps.
+  \item Those actually executed and sent to the client. These are called pacts (short for packet actions).
+\end{itemize}
+
+\section{Quantities}
+
+We introduce the concept of a quantity to solve this problem elegantly. A quantity is a function that takes the state of a battle and outputs an (arbitrary-precision) integer.
+
+Quantities may refer to other quantities, as with a hypothetical (sum) quantity that takes two other quantities.
+
+\section{Internal representation}
+
+(NB: for convenience, we use the present tense, although this is all NYI.)
+
+All of the data required for all spell descriptions in x801 are stored in the spell index, which consists of the following sections:
+
+\begin{itemize}
+  \item Name lookup: converts high-level names (such as spell.hydra) into a low-level name (an integer ID).
+  \item Metadata: for each spell, store the cost, accuracy, school, etc., as well as addresses to its top-level steps.
+  \item Quantities: store all of the quantities used by spells. As an optimisation, merge identical quantities.
+  \item Steps: store all of the steps used by spells.
+\end{itemize}
+
+Quantities are represented as 32-bit integers.
+
+\begin{itemize}
+  \item If this is less than 230 or at least 3 · 230, then this is a signed direct fixed quantity (to reduce the number of indirections).
+  \item Otherwise, (id - 230) is an offset into a quantity table, in 32-bit words. This means that the quantity table has a hard limit of 230 words, or 4 GB.
+  \begin{itemize}
+    \item The first 32-bit word pointed to by this offset (or at least its 16 least significant bits) is the quantity type.
+    \item Subsequent words are interpreted differently by each type.
+  \end{itemize}
+\end{itemize}
+
+Similarly, steps are represented as 32-bit integers, but this is always an offset into the step table.
+
+\section{Conversion from steps to pacts}
+
+Converting from steps to pacts during the execution of the spell is straightforward:
+
+\begin{itemize}
+  \item When each step is executed, emit a pact with the results.
+  \item Some spells use the random or similar step (w101: Rusalka's Wrath):
+\begin{alltt}
+(damage, storm, range(1445, 1525), oneEnemy)
+(random, 0.8,
+  (damageCharm, storm, 30, appearanceStormBlade, self),
+  (damageCharm, storm, -30, appearanceStormWeakness, self))
+\end{alltt}
+  Before emitting a pact of the step actually taken, a random step should emit a \texttt{branch} pact that describes which step was taken, as to provide information for animations.
+  \item {[tentative]} Area-of-effect steps should emit a \texttt{branch} pact with value 1 before the pacts for each target and a \texttt{branch} pact with value 0 after all targets are affected.
+\end{itemize}
+
+Thus when all entities in the battle have made their decisions, the server should send the following to each client that can see the battle:
+
+\begin{itemize}
+  \item The order in which the entities move.
+  \item For each entity:
+  \begin{itemize}
+    \item For each over-time effect:
+    \begin{itemize}
+      \item The wards invoked during the effect.
+      \item The pacts emitted by this effect.
+      \item Whether the effect expires this turn.
+    \end{itemize}
+    \item Whether they pass or try to cast a spell.
+    \item If casting a spell:
+    \begin{itemize}
+      \item Information about all charms invoked before casting (e.~g. accuracy charms).
+      \item The school of the spell.
+      \item Whether the spell succeeded.
+      \item If the spell succeeded:
+      \begin{itemize}
+        \item Information about all charms and wards invoked during the spell (e.~g. damage charms and wards).
+        \item The pacts emitted by this spell.
+      \end{itemize}
+    \end{itemize}
+  \end{itemize}
+\end{itemize}
+
+(NB: pacts of hanging effects should include identifiers so they can be referred to when they are removed.)
+
+(NB: this effectively allows the client to be a dumb client while having the server handle most of the logic. Simulating battles is not really resource-intensive so we believe this is the best approach.)
+
+\section{Animations}
+
+This has been the most difficult part of combat matters, and will probably require a scripting language. However, with data about pacts, this is quite a straightforward matter.
+
+\subsection{Synchronisation}
+
+The server should not start the timer before all animations are finished. At the same time, it should not trust the client to send back a message when this is done.
+
+To mitigate this problem, the server should ``simulate'' spell animations, as well as hanging effect invocations and casting effects to calculate the amount of time it should wait before starting the timer.
+
+\subsection{Orientation of battle circle}
+
+The battle circle is laid out such that one team faces toward the right, and the other toward the left. This allows animations to work against any entity by drawing and coding it for one orientation.
+
+\subsection{Frames of reference}
+
+There are two frames of reference:
+
+\begin{itemize}
+  \item Absolute: coordinates are relative to the game window. Sprites shown in this frame of reference are visible only to entities in the battle.
+  \item Relative: coordinates are relative to the target. Sprites shown in this frame of reference are visible to both combatants and spectators.
+\end{itemize}
+
+\subsection{Animation commands}
+
+An animation file consists of one or more \emph{animation commands}, which include:
+
+\begin{itemize}
+  \item Creating an animated sprite, taking:
+  \begin{itemize}
+    \item The image file to use (if multiple image files per spell are supported)
+    \item The offset into the image
+    \item The number of frames supplied
+    \item The offset for each frame
+    \item The duration of each frame (either one number or a list)
+    \item The position(s) of the sprite
+    \item The scale of the sprite
+    \item The frame of reference
+  \end{itemize}
+  \item Creating a particle, taking:
+  \begin{itemize}
+    \item The appearance of a particle (offset into texture or ID)
+    \item The colour and blend mode of the particle
+    \item Initial position, velocity and acceleration
+    \item Maximum speed of the particle
+    \item Life span of the particle
+    \item Behaviour as particle disappears
+    \item The frame of reference
+  \end{itemize}
+  \item Waiting for some amount of time (e.~g. to wait for an animmation to expire)
+  \item Displaying a pact
+  \item On a branch pact, jumping elsewhere within the animation depending on the branch taken
+  \item Unconditionally jumping elsewhere within the animation
+  \item Invoking all charms and wards
+\end{itemize}
+
+\end{document}
