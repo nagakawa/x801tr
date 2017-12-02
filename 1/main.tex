@@ -95,8 +95,8 @@ All of the data required for all spell descriptions in x801 are stored in the sp
 Quantities are represented as 32-bit integers.
 
 \begin{itemize}
-  \item If this is less than 230 or at least 3 · 230, then this is a signed direct fixed quantity (to reduce the number of indirections).
-  \item Otherwise, (id - 230) is an offset into a quantity table, in 32-bit words. This means that the quantity table has a hard limit of 230 words, or 4 GB.
+  \item If this is less than $2^30$ or at least $3 \cdot 2^30$, then this is a signed direct fixed quantity (to reduce the number of indirections).
+  \item Otherwise, $(id - 2^30)$ is an offset into a quantity table, in 32-bit words. This means that the quantity table has a hard limit of $2^30$ words, or 4 GB.
   \begin{itemize}
     \item The first 32-bit word pointed to by this offset (or at least its 16 least significant bits) is the quantity type.
     \item Subsequent words are interpreted differently by each type.
